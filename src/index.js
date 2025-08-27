@@ -20,20 +20,43 @@ dotenv.config()
 
 const app = express()
 
-// CORS allowlist (Render/Vercel friendly)
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean)
+// ---- CORS allowlist (supports wildcards) ----
+const raw = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+
+// exact matches (no wildcards)
+const exact = new Set(
+  raw.filter(o => !o.includes('*') && !o.startsWith('regex:'))
+     .map(o => o.replace(/\/$/, '').toLowerCase())
+)
+
+// wildcard / regex patterns
+const patterns = raw
+  .filter(o => o.includes('*') || o.startsWith('regex:'))
+  .map(p => {
+    if (p.startsWith('regex:')) return new RegExp(p.slice(6))
+    const esc = p.replace(/\/$/, '').replace(/[.+?^${}()|[\]\\]/g, '\\.').replace(/\*/g, '.*')
+    return new RegExp('^' + esc + '$', 'i')
+  })
+
+function isAllowed(origin) {
+  if (!origin) return true // allow non-browser clients
+  const o = origin.replace(/\/$/, '').toLowerCase()
+  if (exact.has(o)) return true
+  return patterns.some(rx => rx.test(o))
+}
 
 app.use(cors({
   origin(origin, cb) {
-    if (!origin) return cb(null, true)
-    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true)
-    return cb(new Error('CORS blocked: ' + origin))
+    if (isAllowed(origin)) return cb(null, true)
+    return cb(new Error('CORS not allowed: ' + origin))
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization']
 }))
+
+// Socket.io configuration will be used later when we create the server
+
 
 app.use(helmet())
 app.use(morgan('dev'))
@@ -60,7 +83,12 @@ io.on('connection', (socket) => registerChatHandlers(io, socket))
 
 // DB connect + start
 mongoose.connect(MONGODB_URI, { dbName: DBNAME }).then(() => {
-  console.log('[mongo] connected to', DBNAME)
+const io = new IOServer(server, { 
+  cors: { 
+    origin: (origin, cb) => cb(null, isAllowed(origin)), 
+    credentials: true 
+  } 
+})
   server.listen(PORT, () => console.log(`[server] http://localhost:${PORT}`))
 }).catch(err => {
   console.error('Mongo connection error:', err.message)
