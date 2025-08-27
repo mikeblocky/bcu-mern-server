@@ -15,6 +15,7 @@ import orderRoutes from './routes/orders.js'
 import adminRoutes from './routes/admin.js'
 import { verifySocket } from './sockets/verifySocket.js'
 import registerChatHandlers from './sockets/chatHandlers.js'
+import seedRoutes from './routes/seed.js'
 
 dotenv.config()
 
@@ -83,6 +84,10 @@ app.use('/api/tasks', taskRoutes)
 app.use('/api/products', productRoutes)
 app.use('/api/orders', orderRoutes)
 app.use('/api/admin', adminRoutes)
+
+if (process.env.SEED_KEY) {
+  app.use('/api/seed', seedRoutes)
+}
 
 // -------------------- HTTP + Socket.io --------------------
 const server = http.createServer(app)
