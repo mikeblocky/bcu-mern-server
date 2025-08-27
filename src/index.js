@@ -20,13 +20,17 @@ dotenv.config()
 
 const app = express()
 
-// ---- CORS allowlist (supports wildcards) ----
-const raw = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
+// -------------------- CORS allowlist (supports wildcards) --------------------
+const raw = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
 
-// exact matches (no wildcards)
+// exact domains (no wildcards)
 const exact = new Set(
-  raw.filter(o => !o.includes('*') && !o.startsWith('regex:'))
-     .map(o => o.replace(/\/$/, '').toLowerCase())
+  raw
+    .filter(o => !o.includes('*') && !o.startsWith('regex:'))
+    .map(o => o.replace(/\/$/, '').toLowerCase())
 )
 
 // wildcard / regex patterns
@@ -34,40 +38,45 @@ const patterns = raw
   .filter(o => o.includes('*') || o.startsWith('regex:'))
   .map(p => {
     if (p.startsWith('regex:')) return new RegExp(p.slice(6))
-    const esc = p.replace(/\/$/, '').replace(/[.+?^${}()|[\]\\]/g, '\\.').replace(/\*/g, '.*')
+    const esc = p
+      .replace(/\/$/, '')
+      .replace(/[.+?^${}()|[\]\\]/g, '\\.')
+      .replace(/\*/g, '.*')
     return new RegExp('^' + esc + '$', 'i')
   })
 
 function isAllowed(origin) {
-  if (!origin) return true // allow non-browser clients
+  if (!origin) return true // allow non-browser clients (e.g., curl)
   const o = origin.replace(/\/$/, '').toLowerCase()
   if (exact.has(o)) return true
   return patterns.some(rx => rx.test(o))
 }
 
-app.use(cors({
-  origin(origin, cb) {
-    if (isAllowed(origin)) return cb(null, true)
-    return cb(new Error('CORS not allowed: ' + origin))
-  },
-  credentials: true,
-  methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization']
-}))
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (isAllowed(origin)) return cb(null, true)
+      return cb(new Error('CORS not allowed: ' + origin))
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204
+  })
+)
 
-// Socket.io configuration will be used later when we create the server
-
-
+// -------------------- Middleware --------------------
 app.use(helmet())
 app.use(morgan('dev'))
 app.use(express.json())
 app.use(cookieParser())
 
+// -------------------- Config --------------------
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017'
 const DBNAME = process.env.MONGODB_DBNAME || 'bcu_lab5'
 const PORT = process.env.PORT || 4000
 
-// Routes (API v1)
+// -------------------- Routes --------------------
 app.get('/', (req, res) => res.json({ ok: true, service: 'BCU MERN Homeworks API' }))
 app.use('/api/auth', authRoutes)
 app.use('/api/tasks', taskRoutes)
@@ -75,22 +84,30 @@ app.use('/api/products', productRoutes)
 app.use('/api/orders', orderRoutes)
 app.use('/api/admin', adminRoutes)
 
-// Create HTTP server + Socket.io
+// -------------------- HTTP + Socket.io --------------------
 const server = http.createServer(app)
-const io = new IOServer(server, { cors: { origin: ALLOWED_ORIGINS, credentials: true } })
-io.use(verifySocket) // JWT auth for sockets
-io.on('connection', (socket) => registerChatHandlers(io, socket))
 
-// DB connect + start
-mongoose.connect(MONGODB_URI, { dbName: DBNAME }).then(() => {
-const io = new IOServer(server, { 
-  cors: { 
-    origin: (origin, cb) => cb(null, isAllowed(origin)), 
-    credentials: true 
-  } 
+const io = new IOServer(server, {
+  cors: {
+    origin(origin, cb) {
+      if (isAllowed(origin)) return cb(null, true)
+      return cb(new Error('CORS not allowed (socket): ' + origin))
+    },
+    credentials: true
+  }
 })
-  server.listen(PORT, () => console.log(`[server] http://localhost:${PORT}`))
-}).catch(err => {
-  console.error('Mongo connection error:', err.message)
-  process.exit(1)
-})
+
+io.use(verifySocket) // JWT auth for sockets
+io.on('connection', socket => registerChatHandlers(io, socket))
+
+// -------------------- DB connect + start --------------------
+mongoose
+  .connect(MONGODB_URI, { dbName: DBNAME })
+  .then(() => {
+    console.log('[mongo] connected to', DBNAME)
+    server.listen(PORT, () => console.log(`[server] http://localhost:${PORT}`))
+  })
+  .catch(err => {
+    console.error('Mongo connection error:', err.message)
+    process.exit(1)
+  })
